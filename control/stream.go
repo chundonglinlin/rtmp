@@ -10,7 +10,6 @@ type Stream struct {
 	writer chunk.Writer
 
 	in     chan Control
-	out    chan Control
 	errs   chan error
 	closer chan struct{}
 
@@ -28,7 +27,6 @@ func NewStream(chunks chunk.Stream, writer chunk.Writer,
 		writer: writer,
 
 		in:     make(chan Control),
-		out:    make(chan Control),
 		errs:   make(chan error),
 		closer: make(chan struct{}),
 
@@ -40,10 +38,6 @@ func NewStream(chunks chunk.Stream, writer chunk.Writer,
 // In is written to when incoming control sequences are read off of the stream
 func (s *Stream) In() <-chan Control { return s.in }
 
-// Out is written to by callers when they want to write a control sequence to
-// the stream
-func (s *Stream) Out() chan<- Control { return s.out }
-
 // Errs is written to when an error is encountered from the chunk stream, or an
 // error is encountered in chunking or parsing.
 func (s *Stream) Errs() <-chan error { return s.errs }
@@ -51,14 +45,28 @@ func (s *Stream) Errs() <-chan error { return s.errs }
 // Close stops the Recv goroutine.
 func (s *Stream) Close() { s.closer <- struct{}{} }
 
-// Recv processes input from all channels, as well as the incoming and outgoing
-// chunk streams.
+// Send sends the given control "c", returning any errors that it encountered
+// along the way.
+func (s *Stream) Send(c Control) error {
+	chunk, err := s.chunker.Chunk(c)
+	if err != nil {
+		return err
+	}
+
+	if err = s.writer.Write(chunk); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Recv processes input from all channels, as well as the incoming chunk
+// streams.
 //
 // Recv runs within its own goroutine.
 func (s *Stream) Recv() {
 	defer func() {
 		close(s.in)
-		close(s.out)
 		close(s.errs)
 		close(s.closer)
 	}()
@@ -75,17 +83,6 @@ func (s *Stream) Recv() {
 			}
 
 			s.in <- control
-		case control := <-s.out:
-			chunk, err := s.chunker.Chunk(control)
-			if err != nil {
-				s.errs <- err
-				continue
-			}
-
-			if err = s.writer.Write(chunk); err != nil {
-				s.errs <- err
-				continue
-			}
 		}
 	}
 }

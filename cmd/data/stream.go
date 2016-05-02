@@ -14,14 +14,12 @@ type Stream struct {
 	// `*chunk.Stream` into `Data`s.
 	parser Parser
 
-	// in holds all Data that is to be written back to the client.
-	in chan Data
 	// writer is the chunk.Writer that is used to write data back to the
 	// client in the RTMP chunk format.
 	writer chunk.Writer
 
-	// out holds each parsed Data token until it can be read somewhere else.
-	out chan Data
+	// in holds each parsed Data token until it can be read somewhere else.
+	in chan Data
 	// errs holds all of the errors that were encountered during parsing.
 	errs chan error
 	// closer is written to when the Stream is told to close itself. When a
@@ -40,7 +38,6 @@ func NewStream(chunks chan *chunk.Chunk, writer chunk.Writer) *Stream {
 		parser: DefaultParser,
 
 		in:     make(chan Data),
-		out:    make(chan Data),
 		errs:   make(chan error),
 		closer: make(chan struct{}),
 	}
@@ -48,13 +45,9 @@ func NewStream(chunks chan *chunk.Chunk, writer chunk.Writer) *Stream {
 
 func (s *Stream) Chunks() chan<- *chunk.Chunk { return s.chunks }
 
-// In returns a write-only channel that, when written to, sends data back to
-// the client.
-func (s *Stream) In() chan<- Data { return s.in }
-
-// Out returns a channel which is written to when a full Data payload can be
+// In returns a channel which is written to when a full Data payload can be
 // parsed from the RTMP chunk stream on which this `*data.Stream` is listening.
-func (s *Stream) Out() <-chan Data { return s.out }
+func (s *Stream) In() <-chan Data { return s.in }
 
 // Errs returns a channel of errors which is written to when an error is
 // encountered during parsing.
@@ -63,6 +56,26 @@ func (s *Stream) Errs() <-chan error { return s.errs }
 // Close closes the `*data.Stream`, causing it to stop listening as well as
 // close all internal channels.
 func (s *Stream) Close() { s.closer <- struct{}{} }
+
+// Write writes the given frame of data "f" our to the chunk stream. If any
+// error occured during marshaling or writing, then it will be returned, and the
+// frame may not have been written correctly, indicating that the connection
+// should be terminated.
+//
+// Successfully, a value of "nil" will be returned and the chunk can be assumed
+// to have been successfully written.
+func (s *Stream) Write(f Data) error {
+	c, err := f.Marshal()
+	if err != nil {
+		return err
+	}
+
+	if err = s.writer.Write(c); err != nil {
+		return err
+	}
+
+	return nil
+}
 
 // SetParser sets the intenral parser used by this Stream. This method is _not_
 // safe to use between multiple goroutines, and should be used with caution.
@@ -83,7 +96,6 @@ func (s *Stream) SetParser(p Parser) { s.parser = p }
 func (s *Stream) Recv() {
 	defer func() {
 		close(s.in)
-		close(s.out)
 		close(s.errs)
 		close(s.closer)
 	}()
@@ -97,17 +109,7 @@ func (s *Stream) Recv() {
 				continue
 			}
 
-			s.out <- data
-		case in := <-s.in:
-			c, err := in.Marshal()
-			if err != nil {
-				s.errs <- err
-				continue
-			}
-
-			if err = s.writer.Write(c); err != nil {
-				s.errs <- err
-			}
+			s.in <- data
 		case <-s.closer:
 			return
 		}

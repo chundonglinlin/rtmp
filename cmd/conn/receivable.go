@@ -29,6 +29,12 @@ type FCPublishCommand struct {
 	StreamKey     string
 }
 
+type FCUnpublishCommand struct {
+	TransactionId float64
+	Nil           *amf0.Null
+	StreamKey     string
+}
+
 type GetStreamLength struct {
 	StreamId float64
 	Nil      *amf0.Null
@@ -39,4 +45,5 @@ func (_ *ConnectCommand) CanReceive() bool      { return true }
 func (_ *CreateStreamCommand) CanReceive() bool { return true }
 func (_ *ReleaseCommand) CanReceive() bool      { return true }
 func (_ *FCPublishCommand) CanReceive() bool    { return true }
+func (_ *FCUnpublishCommand) CanReceive() bool  { return true }
 func (_ *GetStreamLength) CanReceive() bool     { return true }

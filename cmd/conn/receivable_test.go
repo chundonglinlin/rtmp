@@ -12,6 +12,7 @@ func TestRelevantCommandsImplementReceivable(t *testing.T) {
 		new(conn.CreateStreamCommand),
 		new(conn.ReleaseCommand),
 		new(conn.FCPublishCommand),
+		new(conn.FCUnpublishCommand),
 		new(conn.GetStreamLength),
 	} {
 		if _, receivable := c.(conn.Receivable); !receivable {
