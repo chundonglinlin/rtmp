@@ -12,10 +12,10 @@ import (
 
 func TestNewServerConstructsServerWithValidBind(t *testing.T) {
 	s, err := server.New("127.0.0.1:1234")
-	defer s.Close()
 
 	assert.IsType(t, &server.Server{}, s)
 	assert.Nil(t, err)
+	s.Close()
 }
 
 func TestServerSocketReturnsNew(t *testing.T) {
@@ -23,9 +23,9 @@ func TestServerSocketReturnsNew(t *testing.T) {
 	assert.Nil(t, err)
 
 	s := server.NewSocket(l.(*net.TCPListener))
-	defer s.Close()
 
 	assert.IsType(t, &server.Server{}, s)
+	s.Close()
 }
 
 func TestServerFailsWithInvalidBind(t *testing.T) {
@@ -40,12 +40,12 @@ func TestListenGetsNewClients(t *testing.T) {
 	assert.Nil(t, err)
 
 	go s.Accept()
-	defer s.Close()
 
 	_, err = net.Dial("tcp", "127.0.0.1:1935")
 	assert.Nil(t, err)
 
 	assert.IsType(t, &client.Client{}, <-s.Clients())
+	s.Close()
 }
 
 func TestReleasesConnection(t *testing.T) {
@@ -53,8 +53,6 @@ func TestReleasesConnection(t *testing.T) {
 	assert.Nil(t, err)
 
 	s := server.NewSocket(l.(*net.TCPListener))
-	defer s.Close()
-
 	acceptReturn := make(chan struct{})
 	go func() {
 		s.Accept()
@@ -68,4 +66,6 @@ func TestReleasesConnection(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 		assert.Fail(t, "timeout: xpected to Accept() to have returned when release is called")
 	}
+
+	s.Close()
 }
