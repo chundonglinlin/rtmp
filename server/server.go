@@ -2,6 +2,7 @@ package server
 
 import (
 	"net"
+	"time"
 
 	"github.com/WatchBeam/rtmp/client"
 )
@@ -15,7 +16,12 @@ import (
 type Server struct {
 	// socket is the net.Listener which enables the `Server` type to listen
 	// for TCP connections.
-	socket net.Listener
+	socket *net.TCPListener
+
+	// the deadline determines how long to wait in listeners before loop
+	// again. This is mostly internal, and just specifies the maximum wait
+	// time in the call to .Release()
+	deadline time.Duration
 
 	// clients is a non-buffered channel of *client.Client, which is
 	// populated each time a client connects.
@@ -23,6 +29,10 @@ type Server struct {
 	// errs is a channel of errors that is written to every time an error is
 	// encountered in the Accept routine.
 	errs chan error
+	// release is a signaler indicating to the Accept() loop to exit and
+	// stop accepting connections on the listener. The Accept() loop listens
+	// to writes to this channel, and will close the channel when it exits.
+	release chan struct{}
 }
 
 // NewBound instantiates and returns a new server, bound to the `bind` address
@@ -33,7 +43,13 @@ type Server struct {
 //
 // Otherwise, a server is returned.
 func New(bind string) (*Server, error) {
-	socket, err := net.Listen("tcp", bind)
+	network := "tcp"
+	addr, err := net.ResolveTCPAddr(network, bind)
+	if err != nil {
+		return nil, err
+	}
+
+	socket, err := net.ListenTCP(network, addr)
 	if err != nil {
 		return nil, err
 	}
@@ -43,11 +59,13 @@ func New(bind string) (*Server, error) {
 
 // New instantiates a new RTMP server which listens on
 // the provided network socket.
-func NewSocket(socket net.Listener) *Server {
+func NewSocket(socket *net.TCPListener) *Server {
 	return &Server{
-		socket:  socket,
-		clients: make(chan *client.Client),
-		errs:    make(chan error),
+		socket:   socket,
+		deadline: time.Second,
+		clients:  make(chan *client.Client),
+		errs:     make(chan error),
+		release:  make(chan struct{}),
 	}
 }
 
@@ -69,6 +87,15 @@ func (s *Server) Errs() <-chan error {
 	return s.errs
 }
 
+// Release halts the Accept() loop and returns the net listener. When this
+// method returns, existing clients will remain connected but the listener
+// will no longer be in use.
+func (s *Server) Release() *net.TCPListener {
+	s.release <- struct{}{}
+	<-s.release
+	return s.socket
+}
+
 // Accept encapsulates the process of accepting new clients to the server.
 //
 // In the failing case, if an error is returned from attempting to connect to a
@@ -80,13 +107,25 @@ func (s *Server) Errs() <-chan error {
 //
 // Accept runs within its own goroutine.
 func (s *Server) Accept() {
+	defer close(s.release)
+	l := s.socket
+
 	for {
-		conn, err := s.socket.Accept()
+		l.SetDeadline(time.Now().Add(s.deadline))
+		conn, err := l.Accept()
+
 		if err != nil {
-			s.errs <- err
-			continue
+			if nerr, ok := err.(net.Error); !ok || !nerr.Timeout() {
+				s.errs <- err
+			}
+		} else {
+			s.clients <- client.New(conn)
 		}
 
-		s.clients <- client.New(conn)
+		select {
+		case <-s.release:
+			return
+		default:
+		}
 	}
 }
