@@ -25,10 +25,11 @@ type Server struct {
 	errs chan error
 }
 
-// New instantiates and returns a new server, bound to the `bind` address given.
-// Semantics for `bind` follow those set forth in the `net` package. Calling
-// `New()` does in-fact create a TCP Listener on that address, and returns an
-// error if the address is non-parsable, or the network is not able to be bound.
+// NewBound instantiates and returns a new server, bound to the `bind` address
+// given. Semantics for `bind` follow those set forth in the `net` package.
+// Calling `New()` does in-fact create a TCP Listener on that address, and
+// returns an error if the address is non-parsable, or the network is not
+// able to be bound.
 //
 // Otherwise, a server is returned.
 func New(bind string) (*Server, error) {
@@ -37,11 +38,17 @@ func New(bind string) (*Server, error) {
 		return nil, err
 	}
 
+	return NewSocket(socket), nil
+}
+
+// New instantiates a new RTMP server which listens on
+// the provided network socket.
+func NewSocket(socket net.Listener) *Server {
 	return &Server{
 		socket:  socket,
 		clients: make(chan *client.Client),
 		errs:    make(chan error),
-	}, nil
+	}
 }
 
 // Close closes the network socket, terminating the processof accepting new

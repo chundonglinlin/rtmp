@@ -17,6 +17,16 @@ func TestNewServerConstructsServerWithValidBind(t *testing.T) {
 	assert.Nil(t, err)
 }
 
+func TestServerSocketReturnsNew(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:1935")
+	assert.Nil(t, err)
+
+	s := server.NewSocket(l)
+	defer s.Close()
+
+	assert.IsType(t, &server.Server{}, s)
+}
+
 func TestServerFailsWithInvalidBind(t *testing.T) {
 	s, err := server.New("256.256.256.256:1234")
 
