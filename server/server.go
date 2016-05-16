@@ -58,21 +58,12 @@ type Server struct {
 	// for TCP connections.
 	socket *net.TCPListener
 
-	// the deadline determines how long to wait in listeners before loop
-	// again. This is mostly internal, and just specifies the maximum wait
-	// time in the call to .Release()
-	deadline time.Duration
-
 	// clients is a non-buffered channel of *client.Client, which is
 	// populated each time a client connects.
 	clients chan *client.Client
 	// errs is a channel of errors that is written to every time an error is
 	// encountered in the Accept routine.
 	errs chan error
-	// release is a signaler indicating to the Accept() loop to exit and
-	// stop accepting connections on the listener. The Accept() loop listens
-	// to writes to this channel, and will close the channel when it exits.
-	release chan struct{}
 
 	// record if the internal state of the server:
 	scond *sync.Cond
@@ -104,12 +95,10 @@ func New(bind string) (*Server, error) {
 // the provided network socket.
 func NewSocket(socket *net.TCPListener) *Server {
 	return &Server{
-		socket:   socket,
-		deadline: time.Second,
-		clients:  make(chan *client.Client),
-		errs:     make(chan error),
-		release:  make(chan struct{}),
-		scond:    sync.NewCond(&sync.Mutex{}),
+		socket:  socket,
+		clients: make(chan *client.Client),
+		errs:    make(chan error),
+		scond:   sync.NewCond(&sync.Mutex{}),
 	}
 }
 
