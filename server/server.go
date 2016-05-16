@@ -2,9 +2,49 @@ package server
 
 import (
 	"net"
+	"sync"
 	"time"
 
 	"github.com/WatchBeam/rtmp/client"
+)
+
+const (
+	// network to use in .New()
+	defaultNetwork = "tcp"
+)
+
+// state is the internal state type used within the Server. Diagram:
+//
+// //       +---------+
+// //       |  IDLE   |
+// //       +---------+
+// //            |
+// //       .Accept()
+// //            v
+// //       +---------+
+// //       |ACCEPTING|
+// //       +---------+
+// //            |
+// //      +-----+-----+
+// //  .Close()   .Release()
+// //      v           v
+// // +---------+ +---------+
+// // | CLOSING | |RELEASING|
+// // +---------+ +---------+
+// //     |            |
+// //     +------+-----+
+// //            v
+// //       +---------+
+// //       | CLOSED  |
+// //       +---------+
+type state uint8
+
+const (
+	idle state = iota
+	accepting
+	closing
+	releasing
+	closed
 )
 
 // A Server represents a TCP server capable of accepting connections, and
@@ -33,6 +73,10 @@ type Server struct {
 	// stop accepting connections on the listener. The Accept() loop listens
 	// to writes to this channel, and will close the channel when it exits.
 	release chan struct{}
+
+	// record if the internal state of the server:
+	scond *sync.Cond
+	state state
 }
 
 // NewBound instantiates and returns a new server, bound to the `bind` address
@@ -43,13 +87,12 @@ type Server struct {
 //
 // Otherwise, a server is returned.
 func New(bind string) (*Server, error) {
-	network := "tcp"
-	addr, err := net.ResolveTCPAddr(network, bind)
+	addr, err := net.ResolveTCPAddr(defaultNetwork, bind)
 	if err != nil {
 		return nil, err
 	}
 
-	socket, err := net.ListenTCP(network, addr)
+	socket, err := net.ListenTCP(defaultNetwork, addr)
 	if err != nil {
 		return nil, err
 	}
@@ -66,13 +109,27 @@ func NewSocket(socket *net.TCPListener) *Server {
 		clients:  make(chan *client.Client),
 		errs:     make(chan error),
 		release:  make(chan struct{}),
+		scond:    sync.NewCond(&sync.Mutex{}),
 	}
 }
 
 // Close closes the network socket, terminating the processof accepting new
 // connections immediately..
 func (s *Server) Close() error {
-	return s.socket.Close()
+	s.scond.L.Lock()
+	defer s.scond.L.Unlock()
+	if err := s.socket.Close(); err != nil {
+		return err
+	}
+
+	if s.state != accepting {
+		s.state = closed
+		return nil
+	}
+
+	s.state = closing
+	s.waitForState(closed)
+	return nil
 }
 
 // Clients returns a read-only channel of *client.Client, written to when a new
@@ -91,9 +148,88 @@ func (s *Server) Errs() <-chan error {
 // method returns, existing clients will remain connected but the listener
 // will no longer be in use.
 func (s *Server) Release() *net.TCPListener {
-	s.release <- struct{}{}
-	<-s.release
+	s.scond.L.Lock()
+	defer s.scond.L.Unlock()
+
+	if s.state != accepting {
+		s.state = closed
+		return s.socket
+	}
+
+	s.state = releasing
+	s.socket.SetDeadline(time.Now())
+	s.waitForState(closed)
+
 	return s.socket
+}
+
+// handleError examines the provided error object and returns true if
+// the accept loop should be terminated.
+func (s *Server) handleError(err error) (kill bool) {
+	s.scond.L.Lock()
+	defer s.scond.L.Unlock()
+
+	nerr, ok := err.(net.Error)
+	// non-network errors can just be sent straight down
+	if !ok {
+		s.errs <- err
+	}
+
+	// Time outs are used to signal when we want to release the socket.
+	if s.state == releasing && nerr.Timeout() {
+		return true
+	}
+
+	// If we're closing and it's a close error, that's perfect, just return!
+	if s.state == closing && isNetCloseError(nerr) {
+		return true
+	}
+
+	// If it's some other kind of temporary error, log it and continue.
+	if nerr.Temporary() {
+		s.errs <- err
+		return false
+	}
+
+	// Otherwise it's a non-temporary network error. Send it
+	// down the error channel and kill the accept loop.
+	s.errs <- fatalError{err}
+	return true
+}
+
+// setState transitions to the target state and emits a broadcast to listeners
+// on the condition.
+func (s *Server) setState(v state) {
+	s.scond.L.Lock()
+	defer s.scond.L.Unlock()
+	s.state = v
+	s.scond.Broadcast()
+}
+
+// setStateIf modifies the current state if the predicate returns true.
+func (s *Server) setStateIf(to state, predicate func(v state) bool) (changed bool) {
+	s.scond.L.Lock()
+	defer s.scond.L.Unlock()
+	if predicate(s.state) {
+		s.state = to
+		s.scond.Broadcast()
+		return true
+	}
+
+	return false
+}
+
+// waitForState blocks until the server enters the `expected` state. It's
+// expected the caller initially has a lock when invoking this function,
+// and this function will maintain that lock when it returns.
+func (s *Server) waitForState(expected state) {
+	for {
+		if expected == s.state {
+			return
+		}
+
+		s.scond.Wait()
+	}
 }
 
 // Accept encapsulates the process of accepting new clients to the server.
@@ -107,25 +243,21 @@ func (s *Server) Release() *net.TCPListener {
 //
 // Accept runs within its own goroutine.
 func (s *Server) Accept() {
-	defer close(s.release)
-	l := s.socket
+	// As soon as we start the accept loop, make sure we're in the idle state.
+	// If not someone probably already closed or released us before this
+	// routine was scheduled!
+	if ok := s.setStateIf(accepting, func(v state) bool { return v == idle }); !ok {
+		return
+	}
+	defer s.setState(closed)
 
 	for {
-		l.SetDeadline(time.Now().Add(s.deadline))
-		conn, err := l.Accept()
+		conn, err := s.socket.Accept()
 
-		if err != nil {
-			if nerr, ok := err.(net.Error); !ok || !nerr.Timeout() {
-				s.errs <- err
-			}
-		} else {
+		if err == nil {
 			s.clients <- client.New(conn)
-		}
-
-		select {
-		case <-s.release:
+		} else if kill := s.handleError(err); kill {
 			return
-		default:
 		}
 	}
 }

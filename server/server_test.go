@@ -64,7 +64,7 @@ func TestReleasesConnection(t *testing.T) {
 	select {
 	case <-acceptReturn:
 	case <-time.After(100 * time.Millisecond):
-		assert.Fail(t, "timeout: xpected to Accept() to have returned when release is called")
+		assert.Fail(t, "timeout: expected to Accept() to have returned when release is called")
 	}
 
 	s.Close()
