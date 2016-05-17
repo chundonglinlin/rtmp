@@ -27,9 +27,6 @@ type NetStream struct {
 	// been completely read and parsed, and is available to callers.
 	in chan Command
 
-	// statuses is a channel which is written to when a caller wants to
-	// write an `onStatus` packet out to the connected client.
-	statuses chan *Status
 	// writer is the chunk.Writer where `onStatus` commands are written to.
 	writer chunk.Writer
 
@@ -53,20 +50,15 @@ func New(chunks <-chan *chunk.Chunk, writer chunk.Writer) *NetStream {
 
 		parser: DefaultParser,
 
-		in:       make(chan Command),
-		statuses: make(chan *Status),
-		closer:   make(chan struct{}),
-		errs:     make(chan error),
+		in:     make(chan Command),
+		closer: make(chan struct{}),
+		errs:   make(chan error),
 	}
 }
 
 // In returns a read-only channel of Commands which have been received from the
 // client.
 func (n *NetStream) In() <-chan Command { return n.in }
-
-// Status returns a channel which, when written to, will write out the given
-// Status command.
-func (n *NetStream) Status() chan<- *Status { return n.statuses }
 
 // Errs returns a read-only channel of errors encountered during the Listen
 // operation.
@@ -77,6 +69,19 @@ func (n *NetStream) Errs() <-chan error { return n.errs }
 // while a parse or send operation is taking place, then that operation will
 // finish before the close operation takes place immediately afterwords.
 func (n *NetStream) Close() { n.closer <- struct{}{} }
+
+// WriteStatus writes the status out to the chunk stream, returning any error
+// that it encountered during the marhsaling stage, or the network stage. If
+// neither of those processes failed, then the Status was written successfully
+// and a value of "nil" will be returned.
+func (n *NetStream) WriteStatus(s *Status) error {
+	c, err := s.AsChunk()
+	if err != nil {
+		return err
+	}
+
+	return n.writer.Write(c)
+}
 
 // Listen loops infinitely, managing the incoming and outgoing channel of chunks
 // on the chunk stream shared between the server and client.
@@ -92,7 +97,6 @@ func (n *NetStream) Close() { n.closer <- struct{}{} }
 // function.
 func (n *NetStream) Listen() {
 	defer func() {
-		close(n.statuses)
 		close(n.in)
 		close(n.errs)
 		close(n.closer)
@@ -109,16 +113,6 @@ L:
 			}
 
 			n.in <- cmd
-		case st := <-n.statuses:
-			c, err := st.AsChunk()
-			if err != nil {
-				n.errs <- err
-				continue
-			}
-
-			if err = n.writer.Write(c); err != nil {
-				n.errs <- err
-			}
 		case <-n.closer:
 			break L
 		}

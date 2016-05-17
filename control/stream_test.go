@@ -86,10 +86,10 @@ func TestWritingAControlChunksIt(t *testing.T) {
 		newStreamWithChunk(2), chunk.NewWriter(ioutil.Discard,
 			chunk.DefaultReadSize), nil, chunker,
 	)
-	go stream.Recv()
 
-	stream.Out() <- ctrl
+	err := stream.Send(ctrl)
 
+	assert.Nil(t, err)
 	chunker.AssertExpectations(t)
 }
 
@@ -102,10 +102,9 @@ func TestWritingAControlErrorsWhenErrored(t *testing.T) {
 	stream := control.NewStream(
 		newStreamWithChunk(2), nil, nil, chunker,
 	)
-	go stream.Recv()
 
-	stream.Out() <- ctrl
+	err := stream.Send(ctrl)
 
-	assert.Equal(t, "test", (<-stream.Errs()).Error())
+	assert.Equal(t, "test", err.Error())
 	chunker.AssertExpectations(t)
 }

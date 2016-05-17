@@ -97,11 +97,11 @@ func TestSendablesAreWrittenToChunkStream(t *testing.T) {
 		chunk.NewWriter(buf, chunk.DefaultReadSize))
 	go nc.Listen()
 
-	nc.Out() <- &CreateStreamResponse{
+	err := nc.Send(&CreateStreamResponse{
 		TransactionId: 1,
-	}
+	})
 
-	assert.Equal(t, 0, len(nc.Errs()))
+	assert.Nil(t, err)
 	assert.Equal(t, []byte{
 		0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1d, 0x14, 0x00, 0x00,
 		0x00, 0x00, 0x02, 0x00, 0x07, 0x5f, 0x72, 0x65, 0x73, 0x75,
@@ -124,6 +124,7 @@ func TestChunkingErrorsArePropogated(t *testing.T) {
 
 	go nc.Listen()
 
-	nc.Out() <- out
-	assert.Equal(t, "foo", (<-nc.Errs()).Error())
+	err := nc.Send(out)
+
+	assert.Equal(t, "foo", err.Error())
 }

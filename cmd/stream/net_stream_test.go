@@ -59,8 +59,8 @@ func TestStreamSendsOnStatusUpdates(t *testing.T) {
 
 	go s.Listen()
 
-	s.Status() <- NewStatus()
+	err := s.WriteStatus(NewStatus())
 
-	assert.Equal(t, 0, len(s.Errs()))
+	assert.Nil(t, err)
 	assert.NotEmpty(t, buf.Bytes())
 }

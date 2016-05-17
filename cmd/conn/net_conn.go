@@ -37,9 +37,6 @@ type NetConn struct {
 	// chunker is the chunker responsible for turning Marshallables into
 	// chunks.
 	chunker Chunker
-	// out is a channel written to by owners of this type when they want to
-	// send something over the channel.
-	out chan Marshallable
 
 	// errs is a channel which is written to when an error occurs.
 	errs chan error
@@ -57,7 +54,6 @@ func NewNetConnection(chunks <-chan *chunk.Chunk, writer chunk.Writer) *NetConn 
 		writer:      writer,
 		chunker:     NewChunker(ChunkStreamId),
 		in:          make(chan Receivable),
-		out:         make(chan Marshallable),
 		errs:        make(chan error),
 		closer:      make(chan struct{}),
 	}
@@ -67,10 +63,6 @@ func NewNetConnection(chunks <-chan *chunk.Chunk, writer chunk.Writer) *NetConn 
 // when a Receivable is read from the connected client.
 func (n *NetConn) In() <-chan Receivable { return n.in }
 
-// Out returns a write-only channel of Marshallables. It should be written to
-// when one wants to send a Marshallable back to the client.
-func (n *NetConn) Out() chan<- Marshallable { return n.out }
-
 // Close halts the Listen operation after the current item has finished
 // processing.
 func (n *NetConn) Close() { n.closer <- struct{}{} }
@@ -79,14 +71,22 @@ func (n *NetConn) Close() { n.closer <- struct{}{} }
 // Listen operation (see below).
 func (n *NetConn) Errs() <-chan error { return n.errs }
 
+// Send sends Marshallable messages over the relevant chunkstream, returning any
+// errors that it encountered.
+func (n *NetConn) Send(m Marshallable) error {
+	c, err := n.chunker.Chunk(m)
+	if err != nil {
+		return err
+	}
+
+	return n.writer.Write(c)
+}
+
 // Listen monitors all of the ingoing and outgoing chnanels on the NetConn type
 // and makes sure that things are in order.
 //  - It decodes chunks when they are received into Receivables, passing them
 //    along the In() channel, or writing an error to Errs() if a parse error was
 //    encountered.
-//
-//  - It chunks outgoing messages written to the Out() channel, and sends them
-//    over the chunk stream, writing an error to Errs() if one was encountered.
 //
 // Listen terminates when the closer channel can be read (accomplished by
 // calling Close()).
@@ -114,16 +114,6 @@ func (n *NetConn) Listen() {
 				n.errs <- err
 			} else {
 				n.in <- r
-			}
-		case out := <-n.out:
-			c, err := n.chunker.Chunk(out)
-			if err != nil {
-				n.errs <- err
-				continue
-			}
-
-			if err = n.writer.Write(c); err != nil {
-				n.errs <- err
 			}
 		case <-n.closer:
 			return
